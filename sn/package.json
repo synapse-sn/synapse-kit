@@ -1,0 +1,41 @@
+﻿{
+  "name": "synapse-sn",
+  "version": "0.1.0",
+  "description": "sn (Synapse Control Language): Taint-Safe Wiring, Causal Invariants & Native WASM/FFI Bridge",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "bun build index.ts --outfile dist/index.js --target bun && tsc -p tsconfig.build.json",
+    "prepublishOnly": "bun run build",
+    "test": "bun test"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/synapse-sn/synapse-kit.git",
+    "directory": "sn"
+  },
+  "keywords": [
+    "dsl",
+    "control-plane",
+    "taint-analysis",
+    "wasm",
+    "ffi",
+    "synapse-kit",
+    "bun"
+  ],
+  "author": "Vesper",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/bun": "^1.4.4",
+    "typescript": "^5.6.3"
+  }
+}

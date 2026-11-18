@@ -14,7 +14,8 @@
     "synapse-kit": "./dist/compiler/cli.js",
     "synapse-axon": "./dist/compiler/cli.js",
     "synapse-memory": "./dist/memory/cli.js",
-    "synapse-runner": "./dist/runner/cli.js"
+    "synapse-runner": "./dist/runner/cli.js",
+    "sn": "./dist/sn/cli.js"
   },
   "exports": {
     ".": {
@@ -60,6 +61,10 @@
     "./optic": {
       "types": "./dist/optic/index.d.ts",
       "import": "./dist/optic/index.js"
+    },
+    "./sn": {
+      "types": "./dist/sn/index.d.ts",
+      "import": "./dist/sn/index.js"
     }
   },
   "workspaces": [
@@ -72,7 +77,8 @@
     "guard",
     "verifier",
     "runtime",
-    "optic"
+    "optic",
+    "sn"
   ],
   "files": [
     "dist",
@@ -91,8 +97,9 @@
     "build:verifier": "cd verifier && bun run build",
     "build:runtime": "cd runtime && bun run build",
     "build:optic": "cd optic && bun run build",
-    "build:root": "bun build compiler/cli.ts --outfile dist/compiler/cli.js --target bun && bun build memory/cli.ts --outfile dist/memory/cli.js --target bun && bun build runner/cli.ts --outfile dist/runner/cli.js --target bun && bun build index.ts --outfile dist/index.js --target bun && bun build compiler/index.ts --outfile dist/compiler/index.js --target bun && bun build memory/index.ts --outfile dist/memory/index.js --target bun && bun build db/index.ts --outfile dist/db/index.js --target bun && bun build bus/index.ts --outfile dist/bus/index.js --target bun && bun build runner/index.ts --outfile dist/runner/index.js --target bun && bun build mesh/index.ts --outfile dist/mesh/index.js --target bun && bun build guard/index.ts --outfile dist/guard/index.js --target bun && bun build verifier/index.ts --outfile dist/verifier/index.js --target bun && bun build runtime/index.ts --outfile dist/runtime/index.js --target bun && bun build optic/index.ts --outfile dist/optic/index.js --target bun && tsc -p tsconfig.build.json",
-    "build": "bun run build:root && bun run build:compiler && bun run build:memory && bun run build:db && bun run build:bus && bun run build:runner && bun run build:mesh && bun run build:guard && bun run build:verifier && bun run build:runtime && bun run build:optic",
+    "build:sn": "cd sn && bun run build",
+    "build:root": "bun build compiler/cli.ts --outfile dist/compiler/cli.js --target bun && bun build memory/cli.ts --outfile dist/memory/cli.js --target bun && bun build runner/cli.ts --outfile dist/runner/cli.js --target bun && bun build sn/cli.ts --outfile dist/sn/cli.js --target bun && bun build index.ts --outfile dist/index.js --target bun && bun build compiler/index.ts --outfile dist/compiler/index.js --target bun && bun build memory/index.ts --outfile dist/memory/index.js --target bun && bun build db/index.ts --outfile dist/db/index.js --target bun && bun build bus/index.ts --outfile dist/bus/index.js --target bun && bun build runner/index.ts --outfile dist/runner/index.js --target bun && bun build mesh/index.ts --outfile dist/mesh/index.js --target bun && bun build guard/index.ts --outfile dist/guard/index.js --target bun && bun build verifier/index.ts --outfile dist/verifier/index.js --target bun && bun build runtime/index.ts --outfile dist/runtime/index.js --target bun && bun build optic/index.ts --outfile dist/optic/index.js --target bun && bun build sn/index.ts --outfile dist/sn/index.js --target bun && tsc -p tsconfig.build.json",
+    "build": "bun run build:root && bun run build:compiler && bun run build:memory && bun run build:db && bun run build:bus && bun run build:runner && bun run build:mesh && bun run build:guard && bun run build:verifier && bun run build:runtime && bun run build:optic && bun run build:sn",
     "prepublishOnly": "bun run build",
     "start": "bun run compiler/cli.ts",
     "check": "bun run compiler/cli.ts check",
@@ -116,11 +123,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/minseokk77/synapse-kit.git"
+    "url": "git+https://github.com/synapse-sn/synapse-kit.git"
   },
-  "homepage": "https://github.com/minseokk77/synapse-kit#readme",
+  "homepage": "https://github.com/synapse-sn/synapse-kit#readme",
   "bugs": {
-    "url": "https://github.com/minseokk77/synapse-kit/issues"
+    "url": "https://github.com/synapse-sn/synapse-kit/issues"
   },
   "keywords": [
     "tauri",

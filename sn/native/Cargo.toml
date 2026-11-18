@@ -1,0 +1,9 @@
+[package]
+name = "sn_native"
+version = "0.1.0"
+edition = "2021"
+description = "sn 제어 언어용 Rust C ABI 네이티브 코어 라이브러리"
+
+[lib]
+name = "sn_native"
+crate-type = ["cdylib", "rlib"]
