@@ -10,6 +10,12 @@ export {
   type ControlUnsubscribe,
 } from "./engine";
 export {
+  attachCognitiveBridge,
+  type CognitiveBridgeProviders,
+  type ImmuneDetectorLike,
+  type PidControllerLike,
+} from "./cognitive";
+export {
   SnError,
   type CompiledSnUnit,
   type CompiledWasmFunction,

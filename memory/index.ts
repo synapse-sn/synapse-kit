@@ -16,3 +16,4 @@ export * from './ai-vector';
 export * from './ai-orchestrator';
 export * from './ai-evals';
 export * from './ai-repair';
+export * from './causal-concepts';
