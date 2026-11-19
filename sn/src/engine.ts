@@ -21,6 +21,7 @@ import {
   type Expr,
   type InvariantDecl,
   type NativeFfiHandler,
+  type PrimitiveType,
   type SanitizerFn,
 } from "./types";
 
@@ -32,6 +33,7 @@ export class SnEngine {
   private readonly invariantsByName = new Map<string, InvariantDecl>();
   private readonly auditLog: ControlAuditEntry[] = [];
   private readonly unsubscribes: ControlUnsubscribe[] = [];
+  private readonly nativeParamTypes = new Map<string, readonly PrimitiveType[]>();
   private initialized = false;
 
   constructor(sourceOrUnit: string | CompiledSnUnit) {
@@ -42,6 +44,12 @@ export class SnEngine {
 
     for (const inv of this.unit.program.invariants) {
       this.invariantsByName.set(inv.name, inv);
+    }
+    for (const fn of this.unit.program.nativeFns) {
+      this.nativeParamTypes.set(
+        fn.name,
+        fn.params.map((p) => p.type),
+      );
     }
   }
 
@@ -74,14 +82,20 @@ export class SnEngine {
     this.ffiHandlers.set(name, fn);
   }
 
-  public callNative(name: string, ...args: number[]): number | bigint {
+  public callNative(name: string, ...args: Array<number | bigint>): number | bigint {
     const wasmFn = this.wasmExports.get(name);
     if (wasmFn) {
-      return wasmFn(...args);
+      const paramTypes = this.nativeParamTypes.get(name) || [];
+      const coercedArgs = args.map((arg, idx) =>
+        paramTypes[idx] === "i64" && typeof arg !== "bigint"
+          ? BigInt(Math.trunc(Number(arg)))
+          : arg,
+      );
+      return wasmFn(...coercedArgs);
     }
     const ffiFn = this.ffiHandlers.get(name);
     if (ffiFn) {
-      return ffiFn(...args);
+      return ffiFn(...(args as number[]));
     }
     throw new SnError(
       `[sn] 등록되지 않은 네이티브 함수 호출입니다: '${name}'`,
@@ -101,8 +115,16 @@ export class SnEngine {
       case "Identifier":
         return scope[expr.name];
       case "MemberAccess": {
+        if (SN_DEFAULTS.FORBIDDEN_MEMBER_PROPS.has(expr.property)) {
+          return undefined;
+        }
         const obj = this.evaluateExpr(expr.object, scope);
-        if (obj === null || obj === undefined || typeof obj !== "object") {
+        if (
+          obj === null ||
+          obj === undefined ||
+          typeof obj !== "object" ||
+          !Object.prototype.hasOwnProperty.call(obj, expr.property)
+        ) {
           return undefined;
         }
         return obj[expr.property];
@@ -166,9 +188,24 @@ export class SnEngine {
    */
   public bindBus(bus: ControlBusLike): void {
     this.unbindBus();
+    let activeDispatchDepth = 0;
 
     for (const wire of this.unit.program.wires) {
       const unsub = bus.subscribe(wire.fromTopic, (msg) => {
+        if (activeDispatchDepth >= SN_DEFAULTS.MAX_WIRE_HOPS) {
+          const reason = `[sn] 순환 와이어 또는 최대 홉 한도(${SN_DEFAULTS.MAX_WIRE_HOPS})를 초과했습니다 (${wire.name})`;
+          this.recordAudit({
+            timestampMs: Date.now(),
+            wireName: wire.name,
+            fromTopic: wire.fromTopic,
+            toTarget: wire.toTarget,
+            status: "error_routed",
+            reason,
+          });
+          return;
+        }
+
+        activeDispatchDepth++;
         try {
           let payload = msg.payload;
 
@@ -185,7 +222,12 @@ export class SnEngine {
 
           for (const checkName of wire.checks) {
             const inv = this.invariantsByName.get(checkName);
-            if (!inv) continue;
+            if (!inv) {
+              throw new SnError(
+                `[sn] 와이어 '${wire.name}'에 선언되지 않은 불변식 '${checkName}'이 참조되었습니다.`,
+                "ENGINE_UNKNOWN_INVARIANT",
+              );
+            }
             const passed = Boolean(
               this.evaluateExpr(inv.requireExpr, { payload }),
             );
@@ -235,6 +277,8 @@ export class SnEngine {
               `synapse-lang:${wire.name}`,
             );
           }
+        } finally {
+          activeDispatchDepth--;
         }
       });
 

@@ -3,13 +3,15 @@
 
 use std::slice;
 
+const MAX_HASH_LEN: i32 = 64 * 1024 * 1024;
+
 /// FNV-1a 64비트 해시 (초고속 비암호화 무결성 체크섬)
 ///
 /// # Safety
 /// `ptr`이 null이 아니고 최소 `len` 바이트 이상의 유효한 메모리를 가리켜야 합니다.
 #[no_mangle]
 pub unsafe extern "C" fn sn_fast_hash(ptr: *const u8, len: i32) -> i64 {
-    if ptr.is_null() || len <= 0 {
+    if ptr.is_null() || len <= 0 || len > MAX_HASH_LEN {
         return 0;
     }
     let bytes = unsafe { slice::from_raw_parts(ptr, len as usize) };

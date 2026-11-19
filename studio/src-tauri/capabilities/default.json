@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Synapse Studio 기본 최소 권한(Least-Privilege) Capability",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

@@ -4,7 +4,7 @@
  */
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 
 export const SERVERLESS_SYNC_CONFIG = {
   SEGMENT_EXTENSION: ".wal.json",
@@ -29,28 +29,53 @@ export interface ServerlessStorageAdapter {
  * 로컬 공유 디렉터리 / 마운트 스토리지 기반 기본 어댑터
  */
 export class LocalDirectoryStorageAdapter implements ServerlessStorageAdapter {
+  private readonly resolvedRoot: string;
+
   constructor(private readonly rootDir: string) {
-    if (!existsSync(this.rootDir)) {
-      mkdirSync(this.rootDir, { recursive: true });
+    this.resolvedRoot = resolve(this.rootDir);
+    if (!existsSync(this.resolvedRoot)) {
+      mkdirSync(this.resolvedRoot, { recursive: true });
     }
   }
 
+  private resolveSafeSegmentPath(segmentId: string): string {
+    if (
+      !segmentId ||
+      segmentId.includes("\0") ||
+      segmentId.includes("/") ||
+      segmentId.includes("\\") ||
+      segmentId.includes("..")
+    ) {
+      throw new Error(
+        `[LocalDirectoryStorageAdapter] 보안 위반: 안전하지 않은 세그먼트 ID입니다 (${segmentId})`
+      );
+    }
+    const targetPath = resolve(this.resolvedRoot, `${segmentId}${SERVERLESS_SYNC_CONFIG.SEGMENT_EXTENSION}`);
+    const prefix = this.resolvedRoot.endsWith(sep) ? this.resolvedRoot : `${this.resolvedRoot}${sep}`;
+    if (!targetPath.startsWith(prefix)) {
+      throw new Error(
+        `[LocalDirectoryStorageAdapter] 보안 위반: 허용 디렉터리 외부 세그먼트 접근 차단 (${segmentId})`
+      );
+    }
+    return targetPath;
+  }
+
   public async putSegment(segment: WalSegmentRecord): Promise<void> {
-    const filePath = join(this.rootDir, `${segment.segmentId}${SERVERLESS_SYNC_CONFIG.SEGMENT_EXTENSION}`);
+    const filePath = this.resolveSafeSegmentPath(segment.segmentId);
     writeFileSync(filePath, JSON.stringify(segment), "utf8");
   }
 
   public async getSegment(segmentId: string): Promise<WalSegmentRecord | null> {
-    const filePath = join(this.rootDir, `${segmentId}${SERVERLESS_SYNC_CONFIG.SEGMENT_EXTENSION}`);
+    const filePath = this.resolveSafeSegmentPath(segmentId);
     if (!existsSync(filePath)) return null;
     const raw = readFileSync(filePath, "utf8").replace(/^\uFEFF/, "");
     return JSON.parse(raw) as WalSegmentRecord;
   }
 
   public async listSegmentIds(): Promise<string[]> {
-    if (!existsSync(this.rootDir)) return [];
+    if (!existsSync(this.resolvedRoot)) return [];
     const ext = SERVERLESS_SYNC_CONFIG.SEGMENT_EXTENSION;
-    return readdirSync(this.rootDir)
+    return readdirSync(this.resolvedRoot)
       .filter((f) => f.endsWith(ext))
       .map((f) => f.slice(0, -ext.length));
   }
@@ -69,7 +94,7 @@ export class ServerlessWalSync {
    * 세그먼트 머클 해시 결정론적 계산
    */
   public static computeSegmentHash(entries: readonly unknown[]): string {
-    return createHash("sha256").update(JSON.stringify(entries)).digest("hex").slice(0, 16);
+    return createHash("sha256").update(JSON.stringify(entries)).digest("hex");
   }
 
   /**

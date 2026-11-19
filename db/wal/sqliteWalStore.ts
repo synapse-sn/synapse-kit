@@ -54,6 +54,11 @@ export class SqliteCausalWalStore {
 
       this.sqlite = new Database(this.dbPath, { create: true });
 
+      const allowedSyncModes = new Set(["NORMAL", "FULL", "OFF"]);
+      if (!allowedSyncModes.has(this.syncMode)) {
+        throw new Error(`[SqliteCausalWalStore] 허용되지 않는 PRAGMA synchronous 모드입니다: ${this.syncMode}`);
+      }
+
       // 시냅스 고성능 PRAGMA 구성: WAL 모드 + OS 가상 메모리 mmap 제로-카피 매핑
       this.sqlite.exec(`PRAGMA journal_mode = WAL;`);
       this.sqlite.exec(`PRAGMA synchronous = ${this.syncMode};`);

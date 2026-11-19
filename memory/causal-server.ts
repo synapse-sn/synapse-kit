@@ -1,4 +1,6 @@
 import { createInterface } from 'node:readline';
+import { tmpdir } from 'node:os';
+import { resolve, sep } from 'node:path';
 import { CAUSAL_MEMORY_CONFIG } from './causal-config';
 import { CausalMemoryStore, type CausalRule } from './causal-store';
 import { runCausalQuery, formatResonanceForAgent, detectModifiedFiles } from './causal-query';
@@ -17,6 +19,26 @@ export interface ServerOptions {
   readonly contextDbPath?: string;
   readonly authToken?: string;
   readonly maxBodyBytes?: number;
+}
+
+function validateSafeCwd(rawCwd?: string): string {
+  if (!rawCwd) return process.cwd();
+  if (rawCwd.includes('\0')) {
+    throw new HttpPayloadError(400, 'cwd 경로에 널 바이트가 포함될 수 없습니다.');
+  }
+  const target = resolve(rawCwd);
+  const isWin = process.platform === 'win32';
+  const normTarget = isWin ? target.toLowerCase() : target;
+  const allowedRoots = [resolve(process.cwd()), resolve(tmpdir())];
+  const inside = allowedRoots.some((root) => {
+    const normRoot = isWin ? root.toLowerCase() : root;
+    const prefix = normRoot.endsWith(sep) ? normRoot : `${normRoot}${sep}`;
+    return normTarget === normRoot || normTarget.startsWith(prefix);
+  });
+  if (!inside) {
+    throw new HttpPayloadError(403, `허용된 작업/임시 디렉터리 외부 cwd 접근이 차단되었습니다: ${rawCwd}`);
+  }
+  return target;
 }
 
 class HttpPayloadError extends Error {
@@ -839,7 +861,7 @@ export async function handleMcpJsonRpcRequest(
 
         case 'synthesize_git_checkpoint': {
           const synthesizer = new CausalSynthesizerEngine(contextStore, store);
-          const cwd = typeof args.cwd === 'string' ? args.cwd : process.cwd();
+          const cwd = validateSafeCwd(typeof args.cwd === 'string' ? args.cwd : undefined);
           if (args.autoCheckpoint === false) {
             const summary = await synthesizer.inspectGitChanges(cwd);
             const intent = synthesizer.synthesizeIntent(summary, args.title);
@@ -969,7 +991,7 @@ export function startCausalServer(options: ServerOptions = {}) {
           const body: any = await readJsonBodyWithLimit(req, maxBodyBytes);
           let files: string[] = Array.isArray(body.files) ? body.files : [];
           if (body.autoGit === true && files.length === 0) {
-            files = await detectModifiedFiles(body.cwd);
+            files = await detectModifiedFiles(validateSafeCwd(typeof body.cwd === 'string' ? body.cwd : undefined));
           }
           const result = store.queryResonance({
             files,
@@ -1130,7 +1152,7 @@ export function startCausalServer(options: ServerOptions = {}) {
         if (url.pathname === '/synthesize' && req.method === 'POST') {
           const synthesizer = new CausalSynthesizerEngine(contextStore, store);
           const body: any = await readJsonBodyWithLimit(req, maxBodyBytes);
-          const cwd = typeof body.cwd === 'string' ? body.cwd : process.cwd();
+          const cwd = validateSafeCwd(typeof body.cwd === 'string' ? body.cwd : undefined);
           if (body.autoCheckpoint === false) {
             const summary = await synthesizer.inspectGitChanges(cwd);
             const intent = synthesizer.synthesizeIntent(summary, body.title);

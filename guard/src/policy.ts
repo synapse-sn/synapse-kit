@@ -71,6 +71,8 @@ export class PiiRedactor {
   }
 }
 
+const MAX_HITL_AUDIT_LOGS = 4096;
+
 /**
  * 고위험 도구 실행 전 Human-in-the-Loop(HITL) 승인 게이트 & 감사 로그
  */
@@ -83,15 +85,24 @@ export class HitlApprovalGate {
     extraHighRiskActions?: readonly string[];
     approvalHandler?: ApprovalCallback;
   }) {
-    this.highRiskSet = new Set([
+    const normalized = [
       ...POLICY_CONFIG.HIGH_RISK_ACTIONS,
       ...(options?.extraHighRiskActions ?? []),
-    ]);
+    ].map((a) => a.trim().toLowerCase());
+    this.highRiskSet = new Set(normalized);
     this.approvalHandler = options?.approvalHandler;
   }
 
+  private pushAudit(entry: HitlAuditEntry): void {
+    if (this.auditLogs.length >= MAX_HITL_AUDIT_LOGS) {
+      this.auditLogs.shift();
+    }
+    this.auditLogs.push(entry);
+  }
+
   public async authorize(req: HitlActionRequest): Promise<HitlAuditEntry> {
-    const isHighRisk = this.highRiskSet.has(req.action);
+    const normalizedAction = String(req.action || "").trim().toLowerCase();
+    const isHighRisk = this.highRiskSet.has(normalizedAction);
     const requestId = `hitl-${this.auditLogs.length + 1}`;
 
     if (!isHighRisk) {
@@ -104,7 +115,7 @@ export class HitlApprovalGate {
         reason: "저위험 작업 자동 승인",
         timestampMs: Date.now(),
       };
-      this.auditLogs.push(entry);
+      this.pushAudit(entry);
       return entry;
     }
 
@@ -118,7 +129,7 @@ export class HitlApprovalGate {
         reason: "고위험 작업 승인 핸들러가 등록되지 않아 자동 차단되었습니다.",
         timestampMs: Date.now(),
       };
-      this.auditLogs.push(entry);
+      this.pushAudit(entry);
       return entry;
     }
 
@@ -132,7 +143,7 @@ export class HitlApprovalGate {
       reason: approved ? "관리자 승인 완료" : "관리자 승인 거부",
       timestampMs: Date.now(),
     };
-    this.auditLogs.push(entry);
+    this.pushAudit(entry);
     return entry;
   }
 

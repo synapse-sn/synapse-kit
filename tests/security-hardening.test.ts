@@ -210,3 +210,171 @@ describe('엔진 및 러너 슈퍼바이저 보안 하드닝 검증', () => {
     expect(procState?.status).toBe('CRASHED');
   });
 });
+
+import { mkdtempSync as mkdtemp2, mkdirSync as mkdir2, rmSync as rmSync2, writeFileSync as writeFile2 } from 'node:fs';
+import { join as join2 } from 'node:path';
+import { tmpdir as tmpdir2 } from 'node:os';
+import { MicroSandboxVM } from '../runtime/src/sandbox';
+import { buildZipBuffer, editDocumentFile } from '../db/editor';
+import { executeMcpTool } from '../compiler/mcp/tools';
+import { RingBufferBus as Bus2 } from '../bus/src/ringBufferBus';
+import { SnEngine, compileSn } from '../sn/src';
+import { LocalDirectoryStorageAdapter } from '../mesh/src/serverlessSync';
+import { HitlApprovalGate } from '../guard/src/policy';
+import { SynapseOptic } from '../optic/src/optic';
+
+describe('전 코어 v0.8.1 심층 보안 · 정합성 회귀 검증', () => {
+  it('8. [MicroSandboxVM] 생성자 체인 탈출, 호스트 에러 탈출 및 프로토타입 오염을 모두 차단한다', () => {
+    const vm = new MicroSandboxVM({ timeoutMs: 200 });
+
+    const r1 = vm.execute(`({}).constructor.constructor("return typeof process")()`);
+    expect(r1.ok).toBe(false);
+
+    const r2 = vm.execute(`greet.constructor("return typeof process")()`, {
+      greet: (x: string) => x,
+    });
+    expect(r2.ok).toBe(false);
+
+    const r3 = vm.execute(
+      `try { failFn(); } catch (e) { e.constructor.constructor("return typeof process")(); }`,
+      {
+        failFn: () => {
+          throw new Error('host error');
+        },
+      }
+    );
+    expect(r3.ok).toBe(false);
+
+    vm.execute(`Object.prototype.v081Polluted = true;`);
+    expect((Object.prototype as any).v081Polluted).toBeUndefined();
+  });
+
+  it('9. [Synapse-DCI Editor] json_patch 프로토타입 오염 및 buildZipBuffer Zip Slip을 차단한다', () => {
+    const tmp = mkdtemp2(join2(tmpdir2(), 'synapse-sec-editor-'));
+    try {
+      const jsonPath = join2(tmp, 'cfg.json');
+      writeFile2(jsonPath, '{"name":"ok"}', 'utf-8');
+
+      expect(() =>
+        editDocumentFile(jsonPath, {
+          operation: 'json_patch',
+          keyPath: '__proto__.pollutedByEditor',
+          value: true,
+        })
+      ).toThrow();
+      expect((Object.prototype as any).pollutedByEditor).toBeUndefined();
+
+      const badZipMap = new Map<string, Uint8Array>([
+        ['../evil.txt', new TextEncoder().encode('hack')],
+      ]);
+      expect(() => buildZipBuffer(badZipMap)).toThrow();
+    } finally {
+      rmSync2(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('10. [MCP Tools] synapse_dci_ingest가 허용 루트 외부 파일 읽기를 차단한다', async () => {
+    const outsideParent = join2(process.cwd(), '..', 'outside-v081-nonexistent.txt');
+    const res = await executeMcpTool('synapse_dci_ingest', { filePath: outsideParent });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain('차단');
+  });
+
+  it('11. [sn 제어 언어] 다중 홉 Taint, 대소문자 우회, __proto__, 순환 와이어, Parse 깊이, WASM 연산 정합성 검증', async () => {
+    // 다중 홉 Taint 및 대소문자 민감 싱크 우회 차단
+    const multiHopUnsafe = `
+      wire hop1 {
+        from "web.raw" as untrusted;
+        to "bus.mid";
+      }
+      wire hop2 {
+        from "bus.mid";
+        to "  SHELL:exec";
+      }
+    `;
+    expect(() => compileSn(multiHopUnsafe)).toThrow();
+
+    // ParseUnary 100중첩 깊이 차단
+    const deepUnary = `
+      invariant too_deep {
+        require ${'!'.repeat(100)}payload.ok;
+      }
+    `;
+    expect(() => compileSn(deepUnary)).toThrow();
+
+    // WASM 단락 평가, i64 비교, 0 나눗셈 트랩 방어
+    const wasmLogic = `
+      native fn logic_norm(a: i32, b: i32) -> bool via wasm {
+        return a && b;
+      }
+      native fn big_gt(a: i64, b: i32) -> bool via wasm {
+        return a > b;
+      }
+      native fn safe_div(a: i32, b: i32) -> i32 via wasm {
+        return a / b;
+      }
+    `;
+    const mathEngine = new SnEngine(wasmLogic);
+    await mathEngine.init();
+    expect(mathEngine.callNative('logic_norm', 2, 1)).toBe(1);
+    expect(mathEngine.callNative('big_gt', 5000000000 as any, 10)).toBe(1);
+    expect(mathEngine.callNative('safe_div', 10, 0)).toBe(0);
+
+    // MemberAccess __proto__ 차단 및 순환 와이어 홉 한도 방어
+    const protoAndCycle = `
+      invariant no_proto {
+        cause "프로토타입 접근 차단";
+        require payload.__proto__ == payload.__proto__;
+      }
+      wire loop_a {
+        from "loop.a";
+        check no_proto;
+        to "loop.b";
+      }
+      wire loop_b {
+        from "loop.b";
+        to "loop.a";
+      }
+    `;
+    const bus = new Bus2({ ringCapacity: 64 });
+    const cycleEngine = new SnEngine(protoAndCycle);
+    await cycleEngine.init();
+    expect(
+      cycleEngine.evaluateExpr(
+        cycleEngine.getCompiledUnit().program.invariants[0].requireExpr,
+        { payload: { safe: 1 } }
+      )
+    ).toBe(true);
+    // __proto__ 접근은 undefined 반환해야 함
+    const protoExpr = (cycleEngine.getCompiledUnit().program.invariants[0].requireExpr as any).left;
+    expect(cycleEngine.evaluateExpr(protoExpr, { payload: { safe: 1 } })).toBeUndefined();
+
+    cycleEngine.bindBus(bus);
+    bus.emit('loop.a', { safe: 1 });
+    expect(cycleEngine.getAuditLog().some((e) => e.status === 'error_routed')).toBe(true);
+    cycleEngine.unbindBus();
+  });
+
+  it('12. [Mesh Serverless / Guard Policy / Optic] Path Traversal, 대소문자 우회, SSRF를 차단한다', async () => {
+    const tmp = mkdtemp2(join2(tmpdir2(), 'synapse-sec-stage3-'));
+    try {
+      const adapter = new LocalDirectoryStorageAdapter(join2(tmp, 'wal'));
+      await expect(adapter.getSegment('../escape')).rejects.toThrow();
+
+      const gate = new HitlApprovalGate();
+      const hitlRes = await gate.authorize({
+        action: ' DEPLOY ',
+        actorId: 'agent-test',
+        summary: 'uppercase bypass attempt',
+      });
+      expect(hitlRes.riskLevel).toBe('high');
+      expect(hitlRes.approved).toBe(false);
+
+      const optic = new SynapseOptic();
+      await expect(optic.goto('file:///etc/passwd')).rejects.toThrow();
+      await expect(optic.goto('http://169.254.169.254/latest/meta-data')).rejects.toThrow();
+    } finally {
+      rmSync2(tmp, { recursive: true, force: true });
+    }
+  });
+});

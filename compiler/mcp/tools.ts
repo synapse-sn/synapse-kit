@@ -1,10 +1,21 @@
 /**
  * 시냅스 11대 코어 공식 MCP 도구 레지스트리 (Synapse MCP Tool Registry)
  */
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { resolve, sep } from "node:path";
 import { MCP_SERVER_CONFIG } from "./config";
 import type { McpTool, McpToolResult } from "./types";
+
+function isPathWithinRoots(targetPath: string, roots: readonly string[]): boolean {
+  const isWin = process.platform === "win32";
+  const normTarget = isWin ? targetPath.toLowerCase() : targetPath;
+  return roots.some((rawRoot) => {
+    const root = resolve(rawRoot);
+    const normRoot = isWin ? root.toLowerCase() : root;
+    const prefix = normRoot.endsWith(sep) ? normRoot : `${normRoot}${sep}`;
+    return normTarget === normRoot || normTarget.startsWith(prefix);
+  });
+}
 
 export const SYNAPSE_MCP_TOOLS: McpTool[] = [
   {
@@ -428,6 +439,10 @@ export async function executeMcpTool(name: string, args: Record<string, any> = {
           throw new Error("[MCP Security] 유효하지 않은 filePath입니다.");
         }
         const filePath = resolve(rawFilePath);
+        const allowedIngestRoots = [resolve(process.cwd()), resolve(tmpdir()), resolve(homedir(), ".aside")];
+        if (!isPathWithinRoots(filePath, allowedIngestRoots)) {
+          throw new Error(`[MCP Security] 허용된 작업/임시/Aside 디렉터리 외부 파일 읽기가 차단되었습니다: ${rawFilePath}`);
+        }
         const collection = String(args.collection || "dci-docs");
         const projectToAside = args.projectToAside === true;
 
@@ -437,7 +452,6 @@ export async function executeMcpTool(name: string, args: Record<string, any> = {
 
         let projectedPath: string | undefined;
         if (projectToAside) {
-          const { homedir } = await import("os");
           const { existsSync, mkdirSync, writeFileSync } = await import("fs");
           const { createHash } = await import("crypto");
 
@@ -446,12 +460,7 @@ export async function executeMcpTool(name: string, args: Record<string, any> = {
             throw new Error("[MCP Security] asideMemoryDir에 허용되지 않은 널 바이트가 포함되어 있습니다.");
           }
           const asideDir = resolve(rawAside);
-          const cwdRoot = resolve(process.cwd());
-          const tmpRoot = resolve(tmpdir());
-          const defaultAside = resolve(homedir(), ".aside");
-          const inBounds = (root: string, target: string) =>
-            target === root || target.startsWith(root.endsWith(sep) ? root : `${root}${sep}`);
-          if (!inBounds(cwdRoot, asideDir) && !inBounds(tmpRoot, asideDir) && !inBounds(defaultAside, asideDir)) {
+          if (!isPathWithinRoots(asideDir, allowedIngestRoots)) {
             throw new Error(`[MCP Security] 허용된 작업/임시/Aside 디렉터리 외부 경로가 차단되었습니다: ${rawAside}`);
           }
 
@@ -508,11 +517,7 @@ export async function executeMcpTool(name: string, args: Record<string, any> = {
           throw new Error("[MCP Security] 유효하지 않은 filePath입니다.");
         }
         const filePath = resolve(rawFilePath);
-        const cwdRoot = resolve(process.cwd());
-        const tmpRoot = resolve(tmpdir());
-        const inBounds = (root: string, target: string) =>
-          target === root || target.startsWith(root.endsWith(sep) ? root : `${root}${sep}`);
-        if (!inBounds(cwdRoot, filePath) && !inBounds(tmpRoot, filePath)) {
+        if (!isPathWithinRoots(filePath, [resolve(process.cwd()), resolve(tmpdir())])) {
           throw new Error(`[MCP Security] 허용된 작업/임시 디렉터리 외부 파일 수정이 차단되었습니다: ${rawFilePath}`);
         }
 
@@ -543,13 +548,8 @@ export async function executeMcpTool(name: string, args: Record<string, any> = {
           throw new Error("[MCP Security] vaultDir에 허용되지 않은 널 바이트가 포함되어 있습니다.");
         }
         const vaultDir = resolve(rawVaultDir);
-        const cwdRoot = resolve(process.cwd());
-        const tmpRoot = resolve(tmpdir());
-        const { homedir } = await import("os");
-        const defaultAside = resolve(homedir(), ".aside");
-        const inBounds = (root: string, target: string) =>
-          target === root || target.startsWith(root.endsWith(sep) ? root : `${root}${sep}`);
-        if (!inBounds(cwdRoot, vaultDir) && !inBounds(tmpRoot, vaultDir) && !inBounds(defaultAside, vaultDir)) {
+        const allowedVaultRoots = [resolve(process.cwd()), resolve(tmpdir()), resolve(homedir(), ".aside")];
+        if (!isPathWithinRoots(vaultDir, allowedVaultRoots)) {
           throw new Error(`[MCP Security] 허용된 작업/임시/Aside 디렉터리 외부 볼트 경로가 차단되었습니다: ${rawVaultDir}`);
         }
 

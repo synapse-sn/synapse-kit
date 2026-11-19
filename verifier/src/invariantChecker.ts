@@ -75,10 +75,11 @@ export class InvariantChecker {
 
     if (this.isDefaultRuleSet) {
       let snippet: string | null = null;
+      const lower = line.toLowerCase();
       for (let rIdx = 0; rIdx < 4; rIdx++) {
-        if (rIdx === 0 && !line.includes("npm")) continue;
-        if (rIdx === 1 && !line.includes("py")) continue;
-        if (rIdx === 2 && !line.includes("console.")) continue;
+        if (rIdx === 0 && !lower.includes("npm")) continue;
+        if (rIdx === 1 && !lower.includes("py")) continue;
+        if (rIdx === 2 && !lower.includes("console.")) continue;
         if (rIdx === 3 && !line.includes(":4")) continue;
         const rule = this.rules[rIdx];
         if (rule.pattern.test(line)) {

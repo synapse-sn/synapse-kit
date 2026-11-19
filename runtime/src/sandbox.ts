@@ -8,15 +8,67 @@ import { RUNTIME_DEFAULTS, type SandboxConfig } from "./config";
 import type { SandboxContext, SandboxExecutionResult } from "./types";
 
 const MAX_SCRIPT_CACHE_SIZE = 1024;
+const FORBIDDEN_MARSHAL_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 const TRIVIAL_INFINITE_LOOP_REGEX =
   /^\s*(?:while\s*\(\s*(?:true|1)\s*\)\s*(?:\{\s*\}|;)|for\s*\(\s*;\s*;\s*\)\s*(?:\{\s*\}|;))\s*;?\s*$/;
 const PURE_CONST_ARITH_REGEX =
   /^\s*(?:const|let|var)\s+([a-zA-Z_$][\w$]*)\s*=\s*(-?\d+(?:\.\d+)?)\s*;\s*\1\s*([+\-*/%])\s*(-?\d+(?:\.\d+)?)\s*;?\s*$/;
-const SANDBOX_SAFE_CONSOLE = Object.freeze({
-  log: () => {},
-  warn: () => {},
-  error: () => {},
-});
+
+const VM_REALM_BOOTSTRAP = `
+(function(root) {
+  var safeConsole = Object.freeze({
+    log: function() {},
+    warn: function() {},
+    error: function() {}
+  });
+  Object.defineProperty(root, "console", {
+    value: safeConsole,
+    writable: false,
+    enumerable: true,
+    configurable: false
+  });
+  var VMError = Error;
+  var VMDate = Date;
+  var VMRegExp = RegExp;
+  var defProp = Object.defineProperty;
+  return {
+    newObj: function() { return {}; },
+    newArr: function() { return []; },
+    newDate: function(ms) { return new VMDate(ms); },
+    newRegExp: function(src, flags) { return new VMRegExp(src, flags); },
+    setProp: function(obj, key, val) {
+      defProp(obj, key, { value: val, writable: true, enumerable: true, configurable: true });
+    },
+    wrapFn: function(hostCall) {
+      return function() {
+        var failed = false;
+        var errMsg = "";
+        var args = [];
+        for (var i = 0; i < arguments.length; i++) {
+          args.push(arguments[i]);
+        }
+        var out = hostCall(args, function(msg) {
+          failed = true;
+          errMsg = String(msg);
+        });
+        if (failed) {
+          throw new VMError(errMsg);
+        }
+        return out;
+      };
+    }
+  };
+})(this);
+`;
+
+interface VmRealmHelpers {
+  newObj: () => Record<string, unknown>;
+  newArr: () => unknown[];
+  newDate: (ms: number) => unknown;
+  newRegExp: (src: string, flags: string) => unknown;
+  setProp: (obj: Record<string, unknown>, key: string, val: unknown) => void;
+  wrapFn: (hostCall: (args: unknown[], setErr: (msg: string) => void) => unknown) => unknown;
+}
 
 export class MicroSandboxVM {
   private readonly defaultTimeoutMs: number;
@@ -27,6 +79,7 @@ export class MicroSandboxVM {
   private warmContext: Context | null = null;
   private warmScope: Record<string, unknown> | null = null;
   private warmBaseKeys: Set<string> | null = null;
+  private warmHelpers: VmRealmHelpers | null = null;
 
   constructor(config: SandboxConfig = {}) {
     this.defaultTimeoutMs = config.timeoutMs ?? RUNTIME_DEFAULTS.TIMEOUT_MS;
@@ -34,47 +87,116 @@ export class MicroSandboxVM {
     this.disallowedSet = new Set(this.disallowedGlobals);
   }
 
-  private ensureWarmContext(): { context: Context; scope: Record<string, unknown>; baseKeys: Set<string> } {
-    if (this.warmContext && this.warmScope && this.warmBaseKeys) {
-      return {
-        context: this.warmContext,
-        scope: this.warmScope,
-        baseKeys: this.warmBaseKeys,
-      };
-    }
-
-    const scope: Record<string, unknown> = {
-      console: SANDBOX_SAFE_CONSOLE,
-      Math,
-      Date,
-      JSON,
-      String,
-      Number,
-      Boolean,
-      Array,
-      Object,
-      Set,
-      Map,
-      RegExp,
-    };
-
+  private createIsolatedRealm(): {
+    context: Context;
+    scope: Record<string, unknown>;
+    baseKeys: Set<string>;
+    helpers: VmRealmHelpers;
+  } {
+    // null 프로토타입 + 문자열/WASM 코드 생성 금지로 호스트 Realm 탈출 원천 차단
+    const scope = Object.create(null) as Record<string, unknown>;
     for (let i = 0; i < this.disallowedGlobals.length; i++) {
       scope[this.disallowedGlobals[i]] = undefined;
     }
 
-    const baseKeys = new Set(Object.keys(scope));
-    const context = createContext(scope);
+    const context = createContext(scope, {
+      codeGeneration: { strings: false, wasm: false },
+    });
+    const helpers = runInContext(VM_REALM_BOOTSTRAP, context, {
+      timeout: this.defaultTimeoutMs,
+      displayErrors: true,
+    }) as VmRealmHelpers;
 
-    this.warmScope = scope;
-    this.warmContext = context;
-    this.warmBaseKeys = baseKeys;
-    return { context, scope, baseKeys };
+    const baseKeys = new Set(Object.keys(scope));
+    return { context, scope, baseKeys, helpers };
+  }
+
+  private ensureWarmContext(): {
+    context: Context;
+    scope: Record<string, unknown>;
+    baseKeys: Set<string>;
+    helpers: VmRealmHelpers;
+  } {
+    if (this.warmContext && this.warmScope && this.warmBaseKeys && this.warmHelpers) {
+      return {
+        context: this.warmContext,
+        scope: this.warmScope,
+        baseKeys: this.warmBaseKeys,
+        helpers: this.warmHelpers,
+      };
+    }
+
+    const realm = this.createIsolatedRealm();
+    this.warmScope = realm.scope;
+    this.warmContext = realm.context;
+    this.warmBaseKeys = realm.baseKeys;
+    this.warmHelpers = realm.helpers;
+    return realm;
   }
 
   private invalidateWarmContext(): void {
     this.warmContext = null;
     this.warmScope = null;
     this.warmBaseKeys = null;
+    this.warmHelpers = null;
+  }
+
+  /**
+   * 호스트 값을 VM Realm 내부 전용 객체/함수로 안전하게 복제(직렬화)하여 호스트 프로토타입 참조를 차단합니다.
+   */
+  private marshalToVm(
+    value: unknown,
+    helpers: VmRealmHelpers,
+    seen: WeakMap<object, unknown> = new WeakMap()
+  ): unknown {
+    if (value === null || value === undefined) return value;
+    const t = typeof value;
+    if (t === "boolean" || t === "number" || t === "string" || t === "bigint") {
+      return value;
+    }
+    if (t === "symbol") return undefined;
+    if (t === "function") {
+      const hostFn = value as (...args: unknown[]) => unknown;
+      return helpers.wrapFn((vmArgs, setErr) => {
+        try {
+          const result = hostFn(...vmArgs);
+          return this.marshalToVm(result, helpers, new WeakMap());
+        } catch (err) {
+          setErr(err instanceof Error ? err.message : String(err));
+          return undefined;
+        }
+      });
+    }
+
+    const obj = value as object;
+    if (seen.has(obj)) return seen.get(obj);
+
+    if (obj instanceof Date) {
+      return helpers.newDate(obj.getTime());
+    }
+    if (obj instanceof RegExp) {
+      return helpers.newRegExp(obj.source, obj.flags);
+    }
+    if (Array.isArray(obj)) {
+      const vmArr = helpers.newArr();
+      seen.set(obj, vmArr);
+      for (let i = 0; i < obj.length; i++) {
+        vmArr.push(this.marshalToVm(obj[i], helpers, seen));
+      }
+      return vmArr;
+    }
+
+    const vmObj = helpers.newObj();
+    seen.set(obj, vmObj);
+    for (const key of Object.keys(obj)) {
+      if (FORBIDDEN_MARSHAL_KEYS.has(key)) continue;
+      helpers.setProp(
+        vmObj,
+        key,
+        this.marshalToVm((obj as Record<string, unknown>)[key], helpers, seen)
+      );
+    }
+    return vmObj;
   }
 
   private static getCompiledScript(wrappedCode: string): Script {
@@ -140,17 +262,17 @@ export class MicroSandboxVM {
     }
 
     // 웜 컨텍스트 준비
-    const { context, scope, baseKeys } = this.ensureWarmContext();
+    const { context, scope, baseKeys, helpers } = this.ensureWarmContext();
     const restoredBaseValues: Array<[string, unknown]> = [];
 
     if (hasInjected) {
       for (let i = 0; i < injectedKeys.length; i++) {
         const key = injectedKeys[i];
-        if (this.disallowedSet.has(key)) continue;
+        if (this.disallowedSet.has(key) || FORBIDDEN_MARSHAL_KEYS.has(key)) continue;
         if (baseKeys.has(key)) {
           restoredBaseValues.push([key, scope[key]]);
         }
-        scope[key] = injectedContext[key];
+        scope[key] = this.marshalToVm(injectedContext[key], helpers);
       }
     }
 
@@ -189,6 +311,14 @@ export class MicroSandboxVM {
         }
       }
 
+      if (
+        code.includes("__proto__") ||
+        code.includes("prototype") ||
+        code.includes("constructor")
+      ) {
+        this.invalidateWarmContext();
+      }
+
       const elapsed = performance.now() - start;
       return {
         ok: true,
@@ -203,26 +333,15 @@ export class MicroSandboxVM {
       // 블록 래핑 문법 한계(SyntaxError)인 경우 단일 1회성 격리 컨텍스트로 폴백 실행
       if (err instanceof SyntaxError) {
         try {
-          const isolatedScope: Record<string, any> = {
-            ...injectedContext,
-            console: SANDBOX_SAFE_CONSOLE,
-            Math,
-            Date,
-            JSON,
-            String,
-            Number,
-            Boolean,
-            Array,
-            Object,
-            Set,
-            Map,
-            RegExp,
-          };
-          for (const forbidden of this.disallowedGlobals) {
-            isolatedScope[forbidden] = undefined;
+          const isolated = this.createIsolatedRealm();
+          if (hasInjected) {
+            for (let i = 0; i < injectedKeys.length; i++) {
+              const key = injectedKeys[i];
+              if (this.disallowedSet.has(key) || FORBIDDEN_MARSHAL_KEYS.has(key)) continue;
+              isolated.scope[key] = this.marshalToVm(injectedContext[key], isolated.helpers);
+            }
           }
-          const isolatedCtx = createContext(isolatedScope);
-          const fallbackOutput = runInContext(code, isolatedCtx, {
+          const fallbackOutput = runInContext(code, isolated.context, {
             timeout,
             displayErrors: true,
           });

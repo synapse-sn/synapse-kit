@@ -4,11 +4,14 @@
  * - JSON-ND / 바이트 프레임 청크 파서 및 자동 재연결 지원
  */
 import { createServer, createConnection, type Server, type Socket } from "node:net";
-import { existsSync, unlinkSync } from "node:fs";
-import { platform } from "node:os";
+import { chmodSync, existsSync, lstatSync, unlinkSync } from "node:fs";
+import { platform, tmpdir } from "node:os";
+import { join } from "node:path";
 import { RingBufferBus } from "./ringBufferBus";
 import type { BusMessage } from "./types";
 import { BUS_DEFAULTS, type BusConfig } from "./config";
+
+const MAX_IPC_BUFFER_BYTES = 2 * 1024 * 1024;
 
 export class IpcBusBridge {
   private server: Server | null = null;
@@ -25,7 +28,8 @@ export class IpcBusBridge {
     if (platform() === "win32") {
       this.pipeOrSocketPath = `\\\\.\\pipe\\${config.socketPath || defaultName}`;
     } else {
-      this.pipeOrSocketPath = config.socketPath || `/tmp/${defaultName}`;
+      const runtimeBase = process.env.XDG_RUNTIME_DIR || tmpdir();
+      this.pipeOrSocketPath = config.socketPath || join(runtimeBase, defaultName);
     }
   }
 
@@ -37,7 +41,9 @@ export class IpcBusBridge {
 
     if (platform() !== "win32" && existsSync(this.pipeOrSocketPath)) {
       try {
-        unlinkSync(this.pipeOrSocketPath);
+        if (lstatSync(this.pipeOrSocketPath).isSocket()) {
+          unlinkSync(this.pipeOrSocketPath);
+        }
       } catch {}
     }
 
@@ -49,6 +55,11 @@ export class IpcBusBridge {
 
           socket.on("data", (chunk) => {
             buffer += chunk.toString("utf-8");
+            if (buffer.length > MAX_IPC_BUFFER_BYTES) {
+              buffer = "";
+              socket.destroy();
+              return;
+            }
             const lines = buffer.split("\n");
             buffer = lines.pop() || "";
 
@@ -78,6 +89,11 @@ export class IpcBusBridge {
         });
 
         this.server.listen(this.pipeOrSocketPath, () => {
+          if (platform() !== "win32") {
+            try {
+              chmodSync(this.pipeOrSocketPath, 0o600);
+            } catch {}
+          }
           resolve();
         });
 
@@ -106,6 +122,11 @@ export class IpcBusBridge {
         let buffer = "";
         socket.on("data", (chunk) => {
           buffer += chunk.toString("utf-8");
+          if (buffer.length > MAX_IPC_BUFFER_BYTES) {
+            buffer = "";
+            socket.destroy();
+            return;
+          }
           const lines = buffer.split("\n");
           buffer = lines.pop() || "";
 

@@ -515,9 +515,16 @@ class Parser {
   }
 
   private parseUnary(depth: number): Expr {
+    if (depth > SN_DEFAULTS.MAX_EXPR_DEPTH) {
+      throw new SnError(
+        SN_MESSAGES.EXPR_TOO_DEEP(SN_DEFAULTS.MAX_EXPR_DEPTH),
+        "PARSE_EXPR_TOO_DEEP",
+        this.spanOf(this.peek()),
+      );
+    }
     if (this.check("!") || this.check("-")) {
       const op = this.advance();
-      const operand = this.parseUnary(depth);
+      const operand = this.parseUnary(depth + 1);
       return { kind: "Unary", op: op.value as "!" | "-", operand, span: this.spanOf(op) };
     }
     return this.parsePostfix(depth);

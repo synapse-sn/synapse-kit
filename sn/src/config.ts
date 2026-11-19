@@ -14,6 +14,10 @@ export const SN_DEFAULTS = {
   MAX_EXPR_DEPTH: 64,
   /** 최대 감사 로그 보관 개수 */
   MAX_AUDIT_ENTRIES: 4096,
+  /** 순환 와이어 무한 재귀 방어 최대 홉 깊이 */
+  MAX_WIRE_HOPS: 16,
+  /** 멤버 접근 프로토타입 체인 차단 속성 */
+  FORBIDDEN_MEMBER_PROPS: new Set<string>(["__proto__", "constructor", "prototype"]),
   /** 민감 싱크 기본 목록 (Taint 검증용) */
   SENSITIVE_SINKS: [
     "shell",

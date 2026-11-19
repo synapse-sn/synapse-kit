@@ -14,6 +14,41 @@ export interface SynapseOpticOptions extends OpticConfig {
   readonly guard?: { scanSecret: (text: string) => { hasSecret: boolean; match?: string } };
 }
 
+const MAX_SNAPSHOT_CACHE_SIZE = 256;
+
+function validateOpticUrl(rawUrl: string): string {
+  const trimmed = rawUrl.trim();
+  if (!trimmed || trimmed.startsWith("-") || trimmed.includes("\0")) {
+    throw new Error(`[SynapseOptic Security] 안전하지 않은 URL 또는 플래그 인젝션입니다: ${rawUrl}`);
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new Error(`[SynapseOptic Security] 유효하지 않은 URL 형식입니다: ${rawUrl}`);
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error(`[SynapseOptic Security] 허용되지 않는 프로토콜입니다(${parsed.protocol}). http/https만 허용됩니다.`);
+  }
+  if (parsed.username || parsed.password) {
+    throw new Error("[SynapseOptic Security] URL에 인증 정보(userinfo)를 포함할 수 없습니다.");
+  }
+  const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (
+    !host ||
+    host === "0.0.0.0" ||
+    host === "::" ||
+    host.startsWith("169.254.") ||
+    host.startsWith("fe80:") ||
+    host === "metadata.google.internal" ||
+    host === "metadata.azure.com" ||
+    host === "100.100.100.200"
+  ) {
+    throw new Error(`[SynapseOptic Security] 차단된 내부/메타데이터 호스트입니다: ${host || "(empty)"}`);
+  }
+  return parsed.toString();
+}
+
 export class SynapseOptic {
   public readonly driver: OpticDriver;
   private readonly endpoint: string;
@@ -54,12 +89,13 @@ export class SynapseOptic {
    * 대상 웹페이지로 이동하고 인터랙티브 노드 스냅샷 추출 (인과율 인메모리 캐싱 지원)
    */
   public async goto(url: string, options: { forceRefresh?: boolean; ttlMs?: number } = {}): Promise<OpticSnapshot> {
+    const safeUrl = validateOpticUrl(url);
     const ttlMs = options.ttlMs ?? 120_000;
     const now = performance.now();
-    const cached = this.snapshotCache.get(url);
+    const cached = this.snapshotCache.get(safeUrl);
 
     if (!options.forceRefresh && cached && now - cached.timestamp < ttlMs) {
-      this.emitBus("optic.navigated.cache_hit", { url, durationMs: 0 });
+      this.emitBus("optic.navigated.cache_hit", { url: safeUrl, durationMs: 0 });
       return {
         ...cached.snapshot,
         durationMs: 0.05,
@@ -67,20 +103,26 @@ export class SynapseOptic {
     }
 
     const start = performance.now();
-    this.emitBus("optic.navigating", { url });
+    this.emitBus("optic.navigating", { url: safeUrl });
 
-    const res = this.driver.runCommand(["nav", url, this.endpoint]);
+    const res = this.driver.runCommand(["nav", safeUrl, this.endpoint]);
     const durationMs = performance.now() - start;
 
     if (!res.ok) {
-      this.emitBus("optic.nav.failed", { url, error: res.stderr });
-      throw new Error(`[SynapseOptic] 페이지 이동 실패 (${url}): ${res.stderr}`);
+      this.emitBus("optic.nav.failed", { url: safeUrl, error: res.stderr });
+      throw new Error(`[SynapseOptic] 페이지 이동 실패 (${safeUrl}): ${res.stderr}`);
     }
 
-    this.currentUrl = url;
+    this.currentUrl = safeUrl;
     const snapshot = this.parseNavSnapshot(res.stdout, durationMs);
-    this.snapshotCache.set(url, { snapshot, timestamp: now });
-    this.emitBus("optic.navigated", { url, totalNodes: snapshot.totalNodes, durationMs });
+    if (this.snapshotCache.size >= MAX_SNAPSHOT_CACHE_SIZE && !this.snapshotCache.has(safeUrl)) {
+      const oldestKey = this.snapshotCache.keys().next().value;
+      if (oldestKey !== undefined) {
+        this.snapshotCache.delete(oldestKey);
+      }
+    }
+    this.snapshotCache.set(safeUrl, { snapshot, timestamp: now });
+    this.emitBus("optic.navigated", { url: safeUrl, totalNodes: snapshot.totalNodes, durationMs });
     return snapshot;
   }
 

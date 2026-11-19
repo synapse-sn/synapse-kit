@@ -15,15 +15,16 @@ import type {
 
 function extractCapabilityFromTarget(target: string): string {
   // 예: "shell:exec" -> "shell", "fs_write:/tmp/a" -> "fs_write", "native_ffi:hash" -> "native_ffi"
-  const colonIdx = target.indexOf(":");
+  const normalized = target.trim().toLowerCase();
+  const colonIdx = normalized.indexOf(":");
   if (colonIdx > 0) {
-    return target.slice(0, colonIdx);
+    return normalized.slice(0, colonIdx).trim();
   }
-  const dotIdx = target.indexOf(".");
+  const dotIdx = normalized.indexOf(".");
   if (dotIdx > 0) {
-    return target.slice(0, dotIdx);
+    return normalized.slice(0, dotIdx).trim();
   }
-  return target;
+  return normalized;
 }
 
 export function analyzeProgram(program: SnProgram): Diagnostic[] {
@@ -73,6 +74,10 @@ export function analyzeProgram(program: SnProgram): Diagnostic[] {
     }
   }
 
+  // 1차 패스: 중복 선언 및 미정의 참조 검증 + 와이어 목록 수집
+  const validWires: WireDecl[] = [];
+  const topicTaint = new Map<string, TaintLevel>();
+
   for (const wire of program.wires) {
     if (wires.has(wire.name)) {
       diagnostics.push({
@@ -84,6 +89,7 @@ export function analyzeProgram(program: SnProgram): Diagnostic[] {
       continue;
     }
     wires.set(wire.name, wire);
+    validWires.push(wire);
 
     // 불변식 참조 검증
     for (const checkName of wire.checks) {
@@ -97,8 +103,36 @@ export function analyzeProgram(program: SnProgram): Diagnostic[] {
       }
     }
 
-    // 정책 및 CaMeL Taint Flow 검증
-    const effectiveTaint: TaintLevel = wire.sanitizer ? "sanitized" : wire.sourceTaint;
+    if (wire.sourceTaint === "untrusted") {
+      topicTaint.set(wire.fromTopic, "untrusted");
+    }
+  }
+
+  // 2차 패스: 다중 홉 CaMeL Taint 고정점 전파 (sanitize 없는 와이어를 거치면 타깃 토픽도 untrusted 전파)
+  const maxIterations = validWires.length + 1;
+  for (let iter = 0; iter < maxIterations; iter++) {
+    let changed = false;
+    for (const wire of validWires) {
+      const inheritedTaint: TaintLevel =
+        wire.sourceTaint === "untrusted" || topicTaint.get(wire.fromTopic) === "untrusted"
+          ? "untrusted"
+          : wire.sourceTaint;
+      const propagated: TaintLevel = wire.sanitizer ? "sanitized" : inheritedTaint;
+      if (propagated === "untrusted" && topicTaint.get(wire.toTarget) !== "untrusted") {
+        topicTaint.set(wire.toTarget, "untrusted");
+        changed = true;
+      }
+    }
+    if (!changed) break;
+  }
+
+  // 3차 패스: 전파된 유효 Taint 기준 정책 및 민감 싱크 위반 검사
+  for (const wire of validWires) {
+    const inheritedTaint: TaintLevel =
+      wire.sourceTaint === "untrusted" || topicTaint.get(wire.fromTopic) === "untrusted"
+        ? "untrusted"
+        : wire.sourceTaint;
+    const effectiveTaint: TaintLevel = wire.sanitizer ? "sanitized" : inheritedTaint;
     const targetCap = extractCapabilityFromTarget(wire.toTarget);
 
     if (wire.guardPolicy) {
@@ -111,9 +145,9 @@ export function analyzeProgram(program: SnProgram): Diagnostic[] {
           span: wire.span,
         });
       } else {
-        // 정책의 taint 규칙 확인
         for (const rule of policy.taintRules) {
-          if (rule.sourceTaint === effectiveTaint && rule.deniedCapabilities.includes(targetCap)) {
+          const deniedSet = rule.deniedCapabilities.map((c) => c.trim().toLowerCase());
+          if (rule.sourceTaint === effectiveTaint && deniedSet.includes(targetCap)) {
             diagnostics.push({
               code: "TAINT_VIOLATION",
               severity: "error",
@@ -122,8 +156,8 @@ export function analyzeProgram(program: SnProgram): Diagnostic[] {
             });
           }
         }
-        // 전역 deny 목록 확인
-        if (policy.deniedCapabilities.includes(targetCap)) {
+        const globalDenied = policy.deniedCapabilities.map((c) => c.trim().toLowerCase());
+        if (globalDenied.includes(targetCap)) {
           diagnostics.push({
             code: "CAPABILITY_DENIED",
             severity: "error",
@@ -136,7 +170,7 @@ export function analyzeProgram(program: SnProgram): Diagnostic[] {
       effectiveTaint === "untrusted" &&
       (SN_DEFAULTS.SENSITIVE_SINKS as readonly string[]).includes(targetCap)
     ) {
-      // 가드 정책 없이 비신뢰 입력이 민감 싱크로 직행하는 경우 차단
+      // 가드 정책 없이 비신뢰 입력(직접 또는 다중 홉 전파)이 민감 싱크로 흐르는 경우 차단
       diagnostics.push({
         code: "TAINT_VIOLATION",
         severity: "error",
