@@ -8,6 +8,7 @@ import { RUNTIME_DEFAULTS, type SandboxConfig } from "./config";
 import type { SandboxContext, SandboxExecutionResult } from "./types";
 
 const MAX_SCRIPT_CACHE_SIZE = 1024;
+const VM_BOOTSTRAP_TIMEOUT_MS = 2000;
 const FORBIDDEN_MARSHAL_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 const TRIVIAL_INFINITE_LOOP_REGEX =
   /^\s*(?:while\s*\(\s*(?:true|1)\s*\)\s*(?:\{\s*\}|;)|for\s*\(\s*;\s*;\s*\)\s*(?:\{\s*\}|;))\s*;?\s*$/;
@@ -75,6 +76,7 @@ export class MicroSandboxVM {
   private readonly disallowedGlobals: readonly string[];
   private readonly disallowedSet: Set<string>;
   private static readonly scriptCache = new Map<string, Script>();
+  private static readonly bootstrapScript = new Script(VM_REALM_BOOTSTRAP);
 
   private warmContext: Context | null = null;
   private warmScope: Record<string, unknown> | null = null;
@@ -102,8 +104,9 @@ export class MicroSandboxVM {
     const context = createContext(scope, {
       codeGeneration: { strings: false, wasm: false },
     });
-    const helpers = runInContext(VM_REALM_BOOTSTRAP, context, {
-      timeout: this.defaultTimeoutMs,
+    const bootstrapTimeout = Math.max(VM_BOOTSTRAP_TIMEOUT_MS, this.defaultTimeoutMs);
+    const helpers = MicroSandboxVM.bootstrapScript.runInContext(context, {
+      timeout: bootstrapTimeout,
       displayErrors: true,
     }) as VmRealmHelpers;
 
@@ -261,24 +264,24 @@ export class MicroSandboxVM {
       }
     }
 
-    // 웜 컨텍스트 준비
-    const { context, scope, baseKeys, helpers } = this.ensureWarmContext();
-    const restoredBaseValues: Array<[string, unknown]> = [];
-
-    if (hasInjected) {
-      for (let i = 0; i < injectedKeys.length; i++) {
-        const key = injectedKeys[i];
-        if (this.disallowedSet.has(key) || FORBIDDEN_MARSHAL_KEYS.has(key)) continue;
-        if (baseKeys.has(key)) {
-          restoredBaseValues.push([key, scope[key]]);
-        }
-        scope[key] = this.marshalToVm(injectedContext[key], helpers);
-      }
-    }
-
     const wrappedCode = `{\n${code}\n}`;
 
     try {
+      // 웜 컨텍스트 준비 및 마샬링 (초기화/직렬화 단계 예외도 안전하게 포획)
+      const { context, scope, baseKeys, helpers } = this.ensureWarmContext();
+      const restoredBaseValues: Array<[string, unknown]> = [];
+
+      if (hasInjected) {
+        for (let i = 0; i < injectedKeys.length; i++) {
+          const key = injectedKeys[i];
+          if (this.disallowedSet.has(key) || FORBIDDEN_MARSHAL_KEYS.has(key)) continue;
+          if (baseKeys.has(key)) {
+            restoredBaseValues.push([key, scope[key]]);
+          }
+          scope[key] = this.marshalToVm(injectedContext[key], helpers);
+        }
+      }
+
       const script = MicroSandboxVM.getCompiledScript(wrappedCode);
       const output = script.runInContext(context, {
         timeout,

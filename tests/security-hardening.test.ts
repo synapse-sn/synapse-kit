@@ -247,6 +247,13 @@ describe('전 코어 v0.8.1 심층 보안 · 정합성 회귀 검증', () => {
 
     vm.execute(`Object.prototype.v081Polluted = true;`);
     expect((Object.prototype as any).v081Polluted).toBeUndefined();
+
+    // 극소 게스트 타임아웃(5ms) 상태에서도 연속 탈출 시도가 미처리 예외 없이 안전 차단되어야 함
+    const tightVm = new MicroSandboxVM({ timeoutMs: 5 });
+    for (let i = 0; i < 20; i++) {
+      const tightRes = tightVm.execute(`({}).constructor.constructor("return typeof process")()`);
+      expect(tightRes.ok).toBe(false);
+    }
   });
 
   it('9. [Synapse-DCI Editor] json_patch 프로토타입 오염 및 buildZipBuffer Zip Slip을 차단한다', () => {
