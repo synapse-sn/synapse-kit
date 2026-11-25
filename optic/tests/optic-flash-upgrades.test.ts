@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -64,7 +64,7 @@ describe("⚡ Synapse Optic Flash 업그레이드 (영속 세션 · 로케이터
   it("3. [OpticPersistentSession] ANSI 프롬프트 REPL 자식 프로세스와 상시 파이프로 직렬 통신한다", async () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "optic-mock-repl-"));
     const mockScript = join(tmpDir, "mock-prom.js");
-    const cmdShim = process.platform === "win32" ? join(tmpDir, "mock-prom.cmd") : mockScript;
+    const launcher = process.platform === "win32" ? join(tmpDir, "mock-prom.cmd") : join(tmpDir, "mock-prom.sh");
 
     writeFileSync(
       mockScript,
@@ -92,11 +92,14 @@ describe("⚡ Synapse Optic Flash 업그레이드 (영속 세션 · 로케이터
     );
 
     if (process.platform === "win32") {
-      writeFileSync(cmdShim, `@echo off\r\n"${process.execPath}" "${mockScript}" %*\r\n`, "utf-8");
+      writeFileSync(launcher, `@echo off\r\n"${process.execPath}" "${mockScript}" %*\r\n`, "utf-8");
+    } else {
+      writeFileSync(launcher, `#!/bin/sh\nexec "${process.execPath}" "${mockScript}" "$@"\n`, "utf-8");
+      chmodSync(launcher, 0o755);
     }
 
     const session = new OpticPersistentSession({
-      binaryPath: cmdShim,
+      binaryPath: launcher,
       endpoint: "http://127.0.0.1:9222",
       connectTimeoutMs: 5_000,
       commandTimeoutMs: 5_000,
