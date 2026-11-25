@@ -14,3 +14,7 @@ export * from "./liveFetcher";
 export * from "./surveyPipeline";
 export * from "./ocr";
 export * from "./voice";
+export * from "./locatorDiagnostics";
+export * from "./persistentSession";
+export * from "./directCdpSession";
+export * from "./adaptiveSettle";

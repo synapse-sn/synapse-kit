@@ -38,6 +38,15 @@ export interface OpticSnapshot {
   readonly durationMs: number;
 }
 
+/** 로케이터 실패 시 유사 인터랙티브 노드 추천 정보 */
+export interface LocatorSuggestion {
+  readonly reference: string;
+  readonly shortAlias?: string;
+  readonly role: string;
+  readonly label: string;
+  readonly similarity: number;
+}
+
 /** 브라우저 액션 실행 결과 */
 export interface OpticActionResult {
   readonly ok: boolean;
@@ -48,6 +57,12 @@ export interface OpticActionResult {
   readonly value?: unknown;
   readonly durationMs: number;
   readonly error?: string;
+  /** 실패 시 스냅샷 기반 유사 요소 진단 목록 */
+  readonly suggestions?: readonly LocatorSuggestion[];
+  /** 실패 원인 요약 진단 메시지 */
+  readonly diagnosticHint?: string;
+  /** 영속 REPL 파이프 세션으로 실행되었는지 여부 */
+  readonly usedPersistentSession?: boolean;
 }
 
 /** 브라우징 상태 요약 */
@@ -57,4 +72,5 @@ export interface OpticStatus {
   readonly targetId?: string;
   readonly currentUrl?: string;
   readonly actionTimeoutMs: number;
+  readonly persistentSessionActive?: boolean;
 }

@@ -17,3 +17,5 @@ export * from './ai-orchestrator';
 export * from './ai-evals';
 export * from './ai-repair';
 export * from './causal-concepts';
+export * from './snn-rag';
+export * from './snn-neural-adapters';

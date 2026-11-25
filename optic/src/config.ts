@@ -53,6 +53,28 @@ export const OPTIC_HYBRID_DEFAULTS = {
   DEFAULT_SESSION_NAME: "default_session",
 } as const;
 
+/**
+ * 영속 REPL 세션, 유사 로케이터 진단, 적응형 정착(Adaptive Settle) 기본 상수
+ */
+export const OPTIC_FLASH_DEFAULTS = {
+  /** 영속 REPL 초기 연결 제한 시간 (ms) */
+  REPL_CONNECT_TIMEOUT_MS: 10_000,
+  /** 영속 REPL 단일 명령 제한 시간 (ms) */
+  REPL_COMMAND_TIMEOUT_MS: 15_000,
+  /** 영속 세션 유휴 자동 정리 시간 (기본 5분) */
+  SESSION_IDLE_TTL_MS: 300_000,
+  /** 실패 시 최대 유사 요소 추천 개수 */
+  MAX_DIAGNOSTIC_SUGGESTIONS: 3,
+  /** 유사 요소 추천 최소 유사도 임계치 (0..1) */
+  MIN_DIAGNOSTIC_SIMILARITY: 0.25,
+  /** 적응형 정착(Adaptive Settle) 조용한 구간 기준 (ms) */
+  ADAPTIVE_QUIET_WINDOW_MS: 80,
+  /** 유휴 상태 조기 실패(Fail-Fast Idle) 최소 관찰 구간 (ms) */
+  FAIL_FAST_IDLE_MS: 160,
+  /** 적응형 정착 기본 최대 대기 상한 (ms) */
+  ADAPTIVE_MAX_WAIT_MS: 2_000,
+} as const;
+
 export interface OpticConfig {
   /** CDP 엔드포인트 URL (기본: http://127.0.0.1:9222) */
   readonly endpoint?: string;
@@ -64,4 +86,10 @@ export interface OpticConfig {
   readonly timeoutMs?: number;
   /** 헤드리스 모드 활성화 여부 */
   readonly headless?: boolean;
+  /** 영속 세션 기본 활성화 여부 (프로세스 스폰 오버헤드 제거) */
+  readonly persistentSession?: boolean;
+  /** 영속 세션 백엔드 선택 ("direct_cdp": 상시 WebSocket Zero-Wait, "repl_pipe": Rust CLI REPL 파이프) */
+  readonly sessionBackend?: "direct_cdp" | "repl_pipe";
+  /** 액션 실패 시 유사 인터랙티브 노드 자동 진단 활성화 여부 (기본: true) */
+  readonly enableDiagnostics?: boolean;
 }
